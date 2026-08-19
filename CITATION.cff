@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: "faust-icc: in-car communication with adaptive howling suppression in FAUST"
+message: "If you use this code, please cite it."
+type: software
+authors:
+  - family-names: Chakraborty
+    given-names: Asmita
+version: 0.1.0
+license: MIT
+abstract: >-
+  A FAUST library for in-car communication (ITU-T P.1150), treating the problem
+  as closed-loop feedback control rather than speech enhancement. Provides a
+  gain ceiling referenced to measured maximum stable gain, a filterbank howling
+  detector that separates feedback modes from speech formants by persistence, a
+  self-allocating cascade of adaptive notches, and frequency-shift
+  decorrelation. Includes a synthetic cabin model so the whole system is
+  demonstrable without hardware.
+keywords:
+  - in-car communication
+  - acoustic feedback
+  - howling suppression
+  - FAUST
+  - audio DSP
