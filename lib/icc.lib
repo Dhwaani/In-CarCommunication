@@ -1,0 +1,474 @@
+//################################ icc.lib ####################################
+// In-Car Communication (ICC) building blocks for FAUST.
+//
+// ICC reinforces speech between rows of a vehicle cabin: a microphone in one
+// zone is amplified into loudspeakers in another. Unlike a speakerphone, the
+// acoustic loop is CLOSED — the loudspeaker output re-enters the microphone
+// that feeds it — so the system is a feedback control problem before it is a
+// speech-enhancement problem. Round-trip loop gain reaching unity at any
+// frequency produces howling, and no amount of echo cancellation prevents it.
+//
+// This library therefore concentrates on the part that ICC needs and a
+// conventional voice front-end does not: keeping the loop stable while giving
+// away as little gain as possible.
+//
+// Everything here is time-domain and sample-rate. There is no FFT, and that is
+// deliberate — FAUST expands FFT into a scalar butterfly graph, whereas a bank
+// of resonant bandpass filters expresses the same spectral analysis idiomatically
+// and cheaply. See docs/design.md for the reasoning.
+//
+// Author: Ashmita Chakraborty
+// License: MIT
+//
+// #### Usage
+//
+// ```
+// ic = library("icc.lib");
+// ```
+//##############################################################################
+
+declare name "ICC";
+declare version "0.1.0";
+declare author "Ashmita Chakraborty";
+declare license "MIT";
+
+ma = library("maths.lib");
+ba = library("basics.lib");
+si = library("signals.lib");
+fi = library("filters.lib");
+an = library("analyzers.lib");
+de = library("delays.lib");
+os = library("oscillators.lib");
+no = library("noises.lib");
+co = library("compressors.lib");
+
+//======================== Analysis primitives ==============================
+
+//---------------------------`(ic.)bandProbe`---------------------------------
+// One analysis band: a resonant bandpass followed by an envelope follower,
+// emitting its own centre frequency alongside the measured level.
+//
+// Emitting the centre frequency as a second output is what makes the argmax
+// fold below possible — each band carries its own identity through the
+// reduction, so the winner knows where it came from.
+//
+// #### Usage
+//
+// ```
+// _ : bandProbe(fc, q, att, rel) : _,_
+// ```
+//
+// Where:
+//
+// * `fc`: band centre frequency (Hz), compile-time constant
+// * `q`: resonance; 10–20 is a sensible range for howling detection
+// * `att`, `rel`: envelope follower attack and release (seconds)
+//
+// Outputs: (level, fc)
+//-----------------------------------------------------------------------------
+bandProbe(fc, q, att, rel) =
+    (fi.resonbp(fc, q, 1) : an.amp_follower_ar(att, rel)) , fc;
+
+//---------------------------`(ic.)pickLouder`--------------------------------
+// Binary reduction step over (level, frequency) pairs: keeps whichever pair
+// has the greater level.
+//
+// #### Usage
+//
+// ```
+// (l1, f1, l2, f2) : pickLouder : _,_
+// ```
+//-----------------------------------------------------------------------------
+pickLouder(l1, f1, l2, f2) = select2(c, l1, l2), select2(c, f1, f2)
+with {
+    c = l2 > l1;
+};
+
+//---------------------------`(ic.)argmaxBands`-------------------------------
+// Fold `n` interleaved (level, frequency) pairs down to the single loudest.
+//
+// This is the FAUST substitute for the argmax an FFT-based detector would do
+// over bins. It is a pure combinational reduction — no loops, no state — and
+// the compiler flattens it into a tree of comparisons.
+//
+// #### Usage
+//
+// ```
+// par(i, N, bandProbe(fc(i), q, att, rel)) : argmaxBands(N) : _,_
+// ```
+//
+// Outputs: (peakLevel, peakFrequency)
+//-----------------------------------------------------------------------------
+argmaxBands(1) = _,_;
+argmaxBands(n) = (argmaxBands(n-1), si.bus(2)) : pickLouder;
+
+//---------------------------`(ic.)meanBands`---------------------------------
+// Mean level across `n` interleaved (level, frequency) pairs, discarding the
+// frequency outputs.
+//
+// The mean is the reference against which a peak is judged prominent. Using
+// the mean of the analysis bands rather than a broadband RMS matters: a
+// broadband measure is dominated by the speech formants, so a genuine
+// narrowband howl at 3 kHz would barely move it.
+//
+// #### Usage
+//
+// ```
+// par(i, N, bandProbe(fc(i), q, att, rel)) : meanBands(N) : _
+// ```
+//-----------------------------------------------------------------------------
+meanBands(n) = par(i, n, (_ , !)) :> /(n);
+
+//---------------------------`(ic.)logBandFreq`-------------------------------
+// Logarithmically spaced band centre frequency.
+//
+// Log spacing is used because howling modes are no more likely at high
+// frequency than low, but the ear — and the notch bandwidth needed to remove
+// a mode without audible damage — scales with frequency.
+//
+// #### Usage
+//
+// ```
+// logBandFreq(i, n, fmin, fmax)
+// ```
+//-----------------------------------------------------------------------------
+logBandFreq(i, n, fmin, fmax) = fmin * pow(fmax/fmin, i/(n-1.0));
+
+//======================== Howling detection =================================
+
+//---------------------------`(ic.)howlDetect`--------------------------------
+// Detect a sustained narrowband spectral peak — the signature of acoustic
+// feedback — and report where it is.
+//
+// A peak is declared a howl when it stands `promThresh` dB above the mean band
+// level AND persists for at least `holdTime` seconds. Both conditions are
+// required: speech formants are prominent but move within tens of
+// milliseconds, whereas a feedback mode is pinned to a room resonance and sits
+// still. The persistence test is what separates the two, and it is the single
+// most important parameter in this library.
+//
+// #### Usage
+//
+// ```
+// _ : howlDetect(nBands, fmin, fmax, q, promThresh, holdTime) : _,_,_
+// ```
+//
+// Where:
+//
+// * `nBands`: number of analysis bands (32 is a good default; cost is linear)
+// * `fmin`, `fmax`: analysis range in Hz
+// * `q`: analysis band resonance
+// * `promThresh`: prominence over mean, in dB, to consider a peak suspicious
+// * `holdTime`: seconds the condition must persist before declaring a howl
+//
+// Outputs: (confidence, peakFrequency, prominence_dB)
+//
+// `confidence` ramps 0 → 1 as the condition persists, so downstream stages can
+// fade a notch in rather than switching it, which would click.
+//-----------------------------------------------------------------------------
+howlDetect(nBands, fmin, fmax, q, promThresh, holdTime) =
+    _ <: par(i, nBands, bandProbe(logBandFreq(i, nBands, fmin, fmax), q, att, rel))
+       <: (argmaxBands(nBands), meanBands(nBands))
+        : verdict
+with {
+    att = 0.005;
+    rel = 0.050;
+
+    // Prominence in dB. The epsilon floors the ratio so that digital silence
+    // does not produce a spurious infinite prominence at start-up.
+    eps = 1e-9;
+
+    verdict(peak, pf, mean) = conf, pf, prom
+    with {
+        prom = 20.0 * log10((peak + eps) / (mean + eps));
+        suspicious = prom > promThresh;
+        // Asymmetric smoothing IS the persistence test: rising over holdTime,
+        // falling over roughly four times that so a mode that is only
+        // intermittently excited does not chatter the notch in and out.
+        conf = suspicious : an.amp_follower_ar(holdTime, 4.0*holdTime);
+    };
+};
+
+//======================== Notch management ==================================
+
+//---------------------------`(ic.)notchSlot`---------------------------------
+// One adaptive notch: detect the dominant howling mode in the incoming signal,
+// latch its frequency, and notch it out with a depth proportional to detector
+// confidence.
+//
+// The frequency is sample-and-held on the rising edge of detection rather than
+// tracked continuously. A continuously tracked notch chases speech formants
+// between howling events and audibly warbles; a latched one stays put and is
+// released only when the mode stops being excited.
+//
+// #### Usage
+//
+// ```
+// _ : notchSlot(nBands, fmin, fmax, q, promThresh, holdTime, width, maxDepth) : _
+// ```
+//
+// Where:
+//
+// * `width`: notch bandwidth in Hz (40–80 is typical)
+// * `maxDepth`: maximum attenuation in dB applied at full confidence
+//
+// Cascading several slots allocates them automatically: slot 2 sees the signal
+// with slot 1's mode already removed, so it locks onto the next strongest mode
+// without any explicit assignment logic. See `notchBank`.
+//-----------------------------------------------------------------------------
+notchSlot(nBands, fmin, fmax, q, promThresh, holdTime, width, maxDepth) =
+    _ <: (_, howlDetect(nBands, fmin, fmax, q, promThresh, holdTime)) : engage
+with {
+    engage(x, conf, pf, prom) = notched * g + x * (1.0 - g)
+    with {
+        // Latch the frequency when confidence first crosses half-way, so the
+        // notch settles on the mode rather than on whatever the detector saw
+        // at the instant the level crossed threshold.
+        latched = ba.sAndH(conf > 0.5, pf) : max(fmin) : min(fmax) : si.smooth(0.999);
+        notched = x : fi.notchw(width, latched);
+        // Crossfade rather than switch. `g` is the wet fraction; the depth in
+        // dB is realised by limiting how far g travels.
+        depthLin = 1.0 - pow(10.0, -maxDepth/20.0);
+        g = conf : min(1.0) : max(0.0) : *(depthLin) : si.smooth(0.9995);
+    };
+};
+
+//---------------------------`(ic.)notchBank`---------------------------------
+// A cascade of `k` adaptive notch slots.
+//
+// Slot allocation is implicit and needs no arbitration: each slot detects on
+// the output of the one before it, so the strongest surviving mode is always
+// the next one removed. This is the main reason the design is a cascade rather
+// than a parallel bank with a scheduler.
+//
+// #### Usage
+//
+// ```
+// _ : notchBank(k, nBands, fmin, fmax, q, promThresh, holdTime, width, maxDepth) : _
+// ```
+//-----------------------------------------------------------------------------
+notchBank(k, nBands, fmin, fmax, q, promThresh, holdTime, width, maxDepth) =
+    seq(j, k, notchSlot(nBands, fmin, fmax, q, promThresh, holdTime, width, maxDepth));
+
+//======================== Decorrelation =====================================
+
+//---------------------------`(ic.)freqShift`---------------------------------
+// Shift every frequency component by a fixed number of Hz.
+//
+// A few Hz of shift is inaudible on speech but destroys the phase coherence
+// that a feedback loop needs in order to build up: a component returning to
+// the microphone no longer reinforces itself, because it comes back at a
+// slightly different frequency each time round the loop. This is the classical
+// Schroeder frequency-shifting trick and typically buys several dB of
+// additional stable gain for no perceptible cost.
+//
+// Built from `fi.pospass`, which forms the analytic signal by filtering out
+// negative frequencies. Note that `fi.hilbert` is only a comment in the FAUST
+// standard library, not a callable function — `pospass` is the supported route.
+//
+// #### Usage
+//
+// ```
+// _ : freqShift(order, shiftHz) : _
+// ```
+//
+// Where:
+//
+// * `order`: pospass filter order; 6 is a reasonable quality/cost balance
+// * `shiftHz`: shift in Hz, typically 3–5
+//
+// The guard band `fc` below is required: the positive-pass filter cannot have
+// an infinitely sharp transition, so content below it is not cleanly separated
+// into its analytic form. Content under roughly SR/(2*order) is therefore not
+// shifted correctly, which for speech at 16 kHz is well below the voice band.
+//-----------------------------------------------------------------------------
+freqShift(order, shiftHz) = analytic , modulator : si.cmul : _ , !
+with {
+    fc = ma.SR / (2.0 * order);
+    analytic = fi.pospass(order, fc);
+    modulator = os.oscsin(shiftHz), os.osccos(shiftHz);
+};
+
+//---------------------------`(ic.)phaseModDelay`-----------------------------
+// Decorrelation by slow delay modulation — the fallback when a frequency
+// shifter is too costly or when the guard band would eat into the voice band.
+//
+// Weaker than frequency shifting, and a deep or fast modulation is audible as
+// vibrato, so keep the depth under about a millisecond.
+//
+// #### Usage
+//
+// ```
+// _ : phaseModDelay(depthMs, rateHz) : _
+// ```
+//-----------------------------------------------------------------------------
+phaseModDelay(depthMs, rateHz) = de.fdelay(maxd, d)
+with {
+    maxd = 1024;
+    centre = 0.001 * depthMs * ma.SR;
+    d = centre * (1.0 + os.osc(rateHz)) + 2.0;
+};
+
+//======================== Gain management ===================================
+
+//---------------------------`(ic.)gainCeiling`-------------------------------
+// Hard ceiling on forward gain, expressed relative to a measured maximum
+// stable gain.
+//
+// This is the coarse stability guarantee and it belongs FIRST in the chain.
+// The notches are surgical corrections on top of it; if the broadband gain is
+// already above MSG, the notches spend their entire depth fighting it and the
+// system howls in whatever mode they are not currently covering.
+//
+// #### Usage
+//
+// ```
+// _ : gainCeiling(msgDb, marginDb, requestedDb) : _
+// ```
+//
+// Where:
+//
+// * `msgDb`: measured maximum stable gain of the installation, in dB
+// * `marginDb`: safety margin below MSG; 6 dB is conventional
+// * `requestedDb`: the gain the application asks for, in dB
+//
+// The applied gain is `min(requestedDb, msgDb - marginDb)`.
+//-----------------------------------------------------------------------------
+gainCeiling(msgDb, marginDb, requestedDb) =
+    *(ba.db2linear(min(requestedDb, msgDb - marginDb)) : si.smooth(0.999));
+
+//---------------------------`(ic.)speechAgc`---------------------------------
+// Level control for the reinforced speech.
+//
+// Deliberately gentle. An aggressive AGC in a closed loop is itself a
+// stability hazard: it raises gain during quiet passages, which is exactly
+// when the loop is closest to ringing, so a fast AGC and a howling suppressor
+// end up fighting each other.
+//
+// #### Usage
+//
+// ```
+// _ : speechAgc(targetDb, maxGainDb) : _
+// ```
+//-----------------------------------------------------------------------------
+speechAgc(targetDb, maxGainDb) = co.compressor_mono(ratio, thresh, att, rel) : *(makeup)
+with {
+    ratio = 3.0;
+    thresh = targetDb;
+    att = 0.010;
+    rel = 0.300;
+    makeup = ba.db2linear(min(maxGainDb, 6.0));
+};
+
+//======================== Cabin simulation ==================================
+
+//---------------------------`(ic.)cabinPath`---------------------------------
+// Acoustic transfer function from a loudspeaker in one zone to a microphone in
+// another, as a delay plus a coloured resonance.
+//
+// This is a caricature, not a measured impulse response, and it is enough: the
+// purpose is to produce a loop with a frequency-dependent gain that has
+// identifiable modes, so a howling suppressor has something real to find. A
+// measured cabin response can be substituted by replacing this function with a
+// convolution against an impulse response.
+//
+// #### Usage
+//
+// ```
+// _ : cabinPath(delayMs, resFreq, resGainDb, hfCutHz) : _
+// ```
+//
+// Where:
+//
+// * `delayMs`: propagation delay, 8–15 ms across a cabin
+// * `resFreq`: dominant cabin mode (200–500 Hz is typical)
+// * `resGainDb`: how far that mode stands above the rest of the response
+// * `hfCutHz`: upper rolloff, around 4 kHz for cabin trim absorption
+//
+// The response is normalised so its PEAK magnitude is 0 dB. This matters: it
+// makes `loopGainDb` in `closedLoop` mean the loop gain at the worst frequency,
+// so the Nyquist condition |L| = 1 sits at 0 dB and the measured MSG is
+// directly interpretable. Without normalisation the resonance boost is silently
+// added to every gain reading, and MSG lands at a meaningless negative number.
+//-----------------------------------------------------------------------------
+cabinPath(delayMs, resFreq, resGainDb, hfCutHz) =
+    de.fdelay(65536, 0.001 * delayMs * ma.SR)
+    : fi.peak_eq(resGainDb, resFreq, resFreq/4.0)
+    : fi.peak_eq(resGainDb * 0.6, resFreq * 2.7, resFreq)
+    : fi.lowpass(2, hfCutHz)
+    : fi.highpass(2, 90.0)
+    : *(ba.db2linear(-resGainDb));   // normalise: peak magnitude = 0 dB
+
+//---------------------------`(ic.)closedLoop`--------------------------------
+// Wrap a processing chain in a synthetic acoustic feedback loop.
+//
+// `loopGainDb` is the dial that makes the demonstration: raise it and the
+// system howls, engage the suppressor and it stays stable considerably higher.
+// The difference between those two thresholds is the added stable gain, which
+// is the figure of merit for the whole design.
+//
+// #### Usage
+//
+// ```
+// _ : closedLoop(chain, path, loopGainDb) : _
+// ```
+//
+// Where:
+//
+// * `chain`: the ICC processing to be enclosed (1 in, 1 out)
+// * `path`: the acoustic return path (1 in, 1 out), e.g. `cabinPath(...)`
+// * `loopGainDb`: return-path gain in dB
+//
+// The `~` operator supplies the one-sample delay that makes the recursion
+// well-defined, so no explicit delay is needed here beyond the acoustic one.
+//-----------------------------------------------------------------------------
+closedLoop(chain, path, loopGainDb) =
+    (+ : chain : loudspeakerSat) ~ (path : *(ba.db2linear(loopGainDb)));
+
+//---------------------------`(ic.)loudspeakerSat`----------------------------
+// Soft saturation standing in for loudspeaker and amplifier headroom.
+//
+// Present for a substantive reason, not as a numerical band-aid. An unstable
+// linear feedback loop grows without bound, and in floating point that reaches
+// infinity and then NaN within seconds — at which point the simulation stops
+// telling you anything. A real system saturates instead, which is both
+// physically correct and what makes an unstable loop audible as a sustained
+// tone rather than as silence.
+//
+// #### Usage
+//
+// ```
+// _ : loudspeakerSat : _
+// ```
+//-----------------------------------------------------------------------------
+loudspeakerSat = /(headroom) : ma.tanh : *(headroom)
+with {
+    headroom = 4.0;
+};
+
+//======================== Complete chains ===================================
+
+//---------------------------`(ic.)loopManager`-------------------------------
+// The full loop-gain manager: ceiling, adaptive notches, decorrelation.
+//
+// Order is not arbitrary and should not be rearranged casually.
+//
+// 1. The ceiling comes first so the notches operate on a signal whose
+//    broadband gain is already known to be survivable.
+// 2. The notch bank comes second, removing the modes that survive the ceiling.
+// 3. The frequency shifter comes LAST, because it must be the final operation
+//    before the loudspeaker. In a two-zone system the opposite zone's echo
+//    canceller references this same signal, and if the reference is tapped
+//    before the shifter it no longer matches what the loudspeaker emitted —
+//    the canceller then fails to converge. Tap references before this stage.
+//
+// #### Usage
+//
+// ```
+// _ : loopManager(msgDb, marginDb, requestedDb, nSlots, shiftHz) : _
+// ```
+//-----------------------------------------------------------------------------
+loopManager(msgDb, marginDb, requestedDb, nSlots, shiftHz) =
+    gainCeiling(msgDb, marginDb, requestedDb)
+    : notchBank(nSlots, 32, 150.0, 6000.0, 14.0, 15.0, 0.20, 60.0, 12.0)
+    : freqShift(6, shiftHz);
