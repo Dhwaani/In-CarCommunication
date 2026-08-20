@@ -159,6 +159,12 @@ canceller will not converge. This is the easiest way to break the system.
   demonstrating the suppressor; it is not a substitute for measured data.
 - More modes than slots means the ceiling absorbs the remainder. That is the intended behaviour, but it means the ceiling still has to be right.
 
+## Related
+
+[StabilityGAN](https://github.com/Dhwaani/StabilityGAN) — learns the notch
+placement this library tunes by hand, by training against a differentiable
+maximum-stable-gain surrogate.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
