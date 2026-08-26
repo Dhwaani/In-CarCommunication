@@ -21,7 +21,7 @@
 ==============================================================================*/
 
 declare name "ICC loop demo";
-declare author "Aasmita Chakraborty";
+declare author "Aashmita Chakraborty";
 declare license "MIT";
 
 import("stdfaust.lib");
