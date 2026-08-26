@@ -29,7 +29,7 @@
 //==============================================================================
 
 declare name "ICC two zone";
-declare author "Asmita Chakraborty";
+declare author "Aasmita Chakraborty";
 declare license "MIT";
 
 import("stdfaust.lib");
