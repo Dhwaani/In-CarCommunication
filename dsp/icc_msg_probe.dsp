@@ -24,7 +24,7 @@
 //==============================================================================
 
 declare name "ICC MSG probe";
-declare author "Aasmita Chakraborty";
+declare author "Aashmita Chakraborty";
 declare license "MIT";
 
 import("stdfaust.lib");
