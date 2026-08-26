@@ -4,7 +4,7 @@ message: "If you use this code, please cite it."
 type: software
 authors:
   - family-names: Chakraborty
-    given-names: Asmita
+    given-names: Ashmita
 version: 0.1.0
 license: MIT
 abstract: >-
