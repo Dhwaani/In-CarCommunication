@@ -109,9 +109,9 @@ faust-icc/
 │   └── build.md             browser, desktop, embedded
 |   └── verify.md            verification
 ├── tools/
-│   ├── inline_lib.py            
-│   ├── msg_sweep.cpp       
-│   └── msg_sweep.dsp     
+│   ├── inline_lib.py        produce a self-contained .dsp with icc.lib inlined    
+│   ├── msg_sweep.cpp        measure maximum stable gain, with and without the suppressor, and report the difference
+│   └── msg_sweep.dsp        headless version of the loop demo for measurement
 └── Makefile
 ```
 
