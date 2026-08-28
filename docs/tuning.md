@@ -3,7 +3,7 @@
 Tune in this order. Each step assumes the ones above it are settled; doing them
 out of order means re-tuning.
 
-## 1. Measure MSG — before anything else
+## Measure MSG — before anything else
 
 Every other parameter depends on this number, and it cannot be guessed: it is a
 property of the vehicle, the microphone placement and the loudspeaker response.
@@ -19,7 +19,7 @@ high.
 Repeat with the cabin in its worst realistic configuration — windows up, seats
 back, few occupants — because that is when `H` is largest.
 
-## 2. Set the ceiling
+## Set the ceiling
 
 `marginDb` = 6 dB is the conventional starting point. Increase it if the cabin
 configuration varies a lot; decrease it only if you have measured MSG across
@@ -41,7 +41,7 @@ manually instead by editing `perDirectionMsg`.
 Test by talking through the system with the loop gain a few dB below MSG. If
 the notches engage during normal speech, raise it.
 
-## 4. Persistence
+## Persistence
 
 The parameter that does the real work.
 
@@ -53,7 +53,7 @@ The parameter that does the real work.
 
 If you can only tune one parameter, tune this one.
 
-## 5. Notch depth and width
+## Notch depth and width
 
 Depth 12 dB and width 60 Hz are good defaults.
 
@@ -64,7 +64,7 @@ yourself needing more than 15 dB, the real problem is that the gain ceiling is s
 Width should scale with the frequencies you expect: 60 Hz is generous at 300 Hz
 and narrow at 4 kHz. If modes are concentrated at low frequency, reduce it.
 
-## 6. Frequency shift
+## Frequency shift
 
 Above about 6 Hz, sustained sounds — a passenger humming, music through the system — acquire an audible beating. Below 2 Hz there is not enough
 decorrelation to matter.
@@ -73,7 +73,7 @@ Set it to 0 to A/B its contribution: raise the loop gain to the howling
 threshold with the shifter off, then turn it on and see how much further it
 can go.
 
-## 7. Slot count
+## Slot count
 
 Three slots handles most cabins. Each slot costs a full 32-band analyser, so
 this is the parameter to cut first if CPU is tight.
