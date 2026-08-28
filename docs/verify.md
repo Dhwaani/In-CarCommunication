@@ -83,7 +83,7 @@ Expected:
 It exits non-zero if added stable gain falls below 8 dB, so it works as a
 regression check after any change to the library.
 
-### How the measurement works
+### How the measurement works ?
 
 We fire a single impulse into the loop, wait six seconds, and sample the RMS energy in a short window starting at 4.5 seconds.
 
