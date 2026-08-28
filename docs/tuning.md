@@ -30,7 +30,7 @@ evenly between directions. If your installation is asymmetric — a rear
 microphone much closer to a speaker than the front one, say — split it
 manually instead by editing `perDirectionMsg`.
 
-## 3. Prominence threshold
+## Prominence threshold
 
 | Value | Behaviour |
 |---|---|
