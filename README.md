@@ -107,6 +107,7 @@ faust-icc/
 │   ├── design.md            architecture and why it is shaped this way
 │   ├── tuning.md            parameter guide, in the order to tune them
 │   └── build.md             browser, desktop, embedded
+|   └── verify.md            verification 
 └── Makefile
 ```
 
